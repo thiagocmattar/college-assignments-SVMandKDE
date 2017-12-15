@@ -1,0 +1,266 @@
+rm(list=ls())
+library('mlbench')
+library('e1071')
+library('MASS')
+library('AtmRay')
+library('varhandle')
+library('rgl')
+library('clusterSim')
+
+splitDataTrainAndTest<-function(xc1,xc2,proportion)
+{
+  
+  #Definindo os limites
+  c1l1<-1:(proportion[1]*nrow(xc1))
+  c1l2<-(c1l1[length(c1l1)]+1):(sum(proportion[1:2])*nrow(xc1))
+  #c1l3<-(c1l2[length(c1l2)]+1):(nrow(xc1))
+  
+  c2l1<-1:(proportion[1]*nrow(xc2))
+  c2l2<-(c2l1[length(c2l1)]+1):(sum(proportion[1:2])*nrow(xc2))
+  #c2l3<-(c2l2[length(c2l2)]+1):(nrow(xc2))
+  
+  
+  #Separando treino e teste
+  x1train <- xc1[c1l1,]
+  x1validation <- xc1[c1l2,]
+  #x1test <- xc1[c1l3,]
+  
+  x2train <- xc2[c2l1,]
+  x2validation <- xc2[c2l2,]
+  #x2test <- xc2[c2l3,]
+  
+  trainY<-matrix(0,nrow=(nrow(x1train)+nrow(x2train)),ncol=1)
+  trainY[1:nrow(x1train),]<-1
+  trainX <- rbind(x1train,x2train)
+  
+  valY<-matrix(0,nrow=(nrow(x1validation)+nrow(x2validation)),ncol=1)
+  valY[1:nrow(x1validation),]<-1
+  valX<-rbind(x1validation,x2validation)
+  
+  #testY<-matrix(0,nrow=(nrow(x1test)+nrow(x2test)),ncol=1)
+  #testY[1:nrow(x1test),]<-1
+  #testX <- rbind(x1test,x2test)
+  
+  output<-list(trainX=trainX,trainY=trainY,valX=valX,valY=valY)#,testX=testX,
+  #testY=testY)
+  
+  return(output)
+}
+
+pxKDE <- function(xi,x,r)
+{
+  N<-nrow(x)
+  n<-ncol(x)
+  K<-c()
+  for(i in 1:N)
+  {
+    d<-t(xi-x[i,])%*%(xi-x[i,])
+    K[i]<-exp(-d/(2*r^2))
+  }
+  p<-(1/(N*(sqrt(2*pi)*r)^n))*sum(K)
+  return(p)
+}
+
+data("BreastCancer")
+
+BreastCancer<-data.matrix(BreastCancer)
+BreastCancer[is.na(BreastCancer)] <- 0
+
+#BreastCancer<-data.Normalization(BreastCancer,type="n1",normalization = "column")
+
+#for(i in 2:10)
+#{
+#  BreastCancer[,i]<-(BreastCancer[,i]-mean(BreastCancer[,i]))/mean(BreastCancer[,i])
+#}
+
+#--------------------------------TESTE SVM-----------------
+
+#Grid para variação dos parâmetros
+gammarange <- c(1 %o% 10^(-5:7))
+Crange <- c(1 %o% 10^(-3:8))
+
+#Otimização dos parâmetros
+acc.svm <- matrix(0,nrow=length(gammarange),ncol=length(Crange))
+acc.svm.sd <- matrix(0,nrow=length(gammarange),ncol=length(Crange))
+
+for(i in 1:length(gammarange))
+{
+  t0 <- Sys.time()
+  for(j in 1:length(Crange))
+  {
+    acc<-c()
+    for(z in 1:30)
+    {
+      BR <- BreastCancer[sample(nrow(BreastCancer)),]
+      X <- BR[,2:10]
+      
+      #Definindo os índices das classes
+      i1 <- which(as.numeric(BR[,11])=='1')
+      i2 <- which(as.numeric(BR[,11])=='2')
+      
+      #Separando as classes
+      proportion <- c(0.8,0.2) 
+      xc1 <- X[i1,]
+      xc2 <- X[i2,]
+      
+      #Separando os dados de treino e teste
+      split_data<-splitDataTrainAndTest(xc1,xc2,proportion)
+      trainX<-split_data[[1]]
+      trainY<-split_data[[2]]
+      valX<-split_data[[3]]
+      valY<-split_data[[4]]
+      #testX<-split_data[[5]]
+      #testY<-split_data[[6]]
+      
+      #Acurácia do SVM
+      svm.model<-svm(trainY ~ ., data=trainX[,1:2],
+                     cost=Crange[j],gamma=gammarange[i])
+      
+      yhat.svm<-as.numeric(predict(svm.model,valX))
+      
+      yhat.svm[yhat.svm<0.5]=0
+      yhat.svm[yhat.svm>=0.50]=1
+      
+      acc[z]<-sum(diag(table(yhat.svm,valY)))/sum(table(yhat.svm,valY))
+    }
+    acc.svm[i,j]<-mean(acc)
+    acc.svm.sd[i,j]<-sd(acc)
+  }
+  print(Sys.time() - t0)
+  print(c(length(gammarange)/i,'% Concluído'))
+}
+
+#---------------------------TESTE KDE--------------------------
+
+#Grid para variação dos parâmetros
+hrange <- c(1 %o% 10^(-7:7))
+
+#Otimização dos parâmetros
+acc.kde <- c()
+acc.kde.sd <-c()
+
+for(i in 1:length(hrange))
+{
+  acc<-c()
+  for(z in 1:30)
+  {
+    BR <- BreastCancer[sample(nrow(BreastCancer)),]
+    X <- BR[,2:10]
+    
+    #Definindo os índices das classes
+    i1 <- which(as.numeric(BR[,11])=='1')
+    i2 <- which(as.numeric(BR[,11])=='2')
+    
+    #Separando as classes
+    proportion <- c(0.8,0.2) 
+    xc1 <- X[i1,]
+    xc2 <- X[i2,]
+    
+    #Separando os dados de treino e teste
+    split_data<-splitDataTrainAndTest(xc1,xc2,proportion)
+    trainX<-split_data[[1]]
+    trainY<-split_data[[2]]
+    valX<-split_data[[3]]
+    valY<-split_data[[4]]
+    # testX<-split_data[[5]]
+    # testY<-split_data[[6]]
+    
+    #Acurácia do KDE
+    pxC1<-c()
+    pxC2<-c()
+    for(k in 1:(nrow(valX)))
+    {
+      pxC1[k]<-pxKDE(valX[k,],trainX[trainY==0,],hrange[i])
+      pxC2[k]<-pxKDE(valX[k,],trainX[trainY==1,],hrange[i])
+    }
+    yhat.kde<-1*(pxC1<pxC2)
+    acc[z]<-sum(diag(table(yhat.kde,valY)))/sum(table(yhat.kde,valY))
+    print(c('LOOP KDE',z))
+  }
+  acc.kde[i]<-mean(acc)
+  acc.kde.sd[i]<-sd(acc)
+  print(c(length(hrange)/i,'% Concluído'))
+}
+
+rang<-5:9
+persp3d(log(gammarange)[rang],log(Crange)[rang],
+        alpha=0.8,acc.svm[rang,rang],col='lightblue')
+plot(log(hrange),acc.kde,type='l',main='Acurácia KDE x largura do kernel')
+
+#Teste do modelo SVM
+gamma_best<-as.integer(which(acc.svm==max(acc.svm),arr.ind=TRUE)[1])
+C_best<-as.integer(which(acc.svm==max(acc.svm),arr.ind=TRUE)[2])
+
+acc.svm.best<-c()
+for(z in 1:30)
+{
+  BR <- BreastCancer[sample(nrow(BreastCancer)),]
+  X <- BR[,2:10]
+  
+  #Definindo os índices das classes
+  i1 <- which(as.numeric(BR[,11])=='1')
+  i2 <- which(as.numeric(BR[,11])=='2')
+  
+  #Separando as classes
+  proportion <- c(0.8,0.2) 
+  xc1 <- X[i1,]
+  xc2 <- X[i2,]
+  
+  #Separando os dados de treino e teste
+  split_data<-splitDataTrainAndTest(xc1,xc2,proportion)
+  trainX<-split_data[[1]]
+  trainY<-split_data[[2]]
+  valX<-split_data[[3]]
+  valY<-split_data[[4]]
+  #testX<-split_data[[5]]
+  #testY<-split_data[[6]]
+  
+  #Acurácia do SVM
+  svm.model<-svm(trainY ~ ., data=trainX,
+                 cost=Crange[C_best],gamma=gammarange[gamma_best])
+  
+  yhat.svm<-as.numeric(predict(svm.model,valX))
+  yhat.svm[yhat.svm<0.5]=0
+  yhat.svm[yhat.svm>=0.50]=1
+  
+  acc.svm.best[z]<-sum(diag(table(yhat.svm,valY)))/sum(table(yhat.svm,valY))
+}
+#Teste do modelo KDE
+h_best<-which.max(acc.kde)
+
+acc<-c()
+for(z in 1:50)
+{
+  BR <- BreastCancer[sample(nrow(BreastCancer)),]
+  X <- BR[,2:10]
+  
+  #Definindo os índices das classes
+  i1 <- which(as.numeric(BR[,11])=='1')
+  i2 <- which(as.numeric(BR[,11])=='2')
+  
+  #Separando as classes
+  proportion <- c(0.8,0.2) 
+  xc1 <- X[i1,]
+  xc2 <- X[i2,]
+  
+  #Separando os dados de treino e teste
+  split_data<-splitDataTrainAndTest(xc1,xc2,proportion)
+  trainX<-split_data[[1]]
+  trainY<-split_data[[2]]
+  valX<-split_data[[3]]
+  valY<-split_data[[4]]
+  # testX<-split_data[[5]]
+  # testY<-split_data[[6]]
+  
+  #Acurácia do KDE
+  pxC1<-c()
+  pxC2<-c()
+  for(k in 1:(nrow(valX)))
+  {
+    pxC1[k]<-pxKDE(valX[k,],trainX[trainY==0,],hrange[h_best])
+    pxC2[k]<-pxKDE(valX[k,],trainX[trainY==1,],hrange[h_best])
+  }
+  yhat.kde<-1*(pxC1<pxC2)
+  acc[z]<-sum(diag(table(yhat.kde,valY)))/sum(table(yhat.kde,valY))
+  print(c('LOOP KDE',z))
+}
